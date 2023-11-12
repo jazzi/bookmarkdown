@@ -1,4 +1,4 @@
 baker
 jinja2
 Markdown
-pyquery
+pyquery ≤ 1.4.0

@@ -8,7 +8,7 @@ setup_info = dict(
     author='Steve Losh',
     author_email='steve@stevelosh.com',
     license='MIT License',
-    url='http://bitbucket.org/sjl/bookmarkdown/',
+    url='https://github.com/sjl/bookmarkdown/',
 
     packages=['bookmarkdown'],
 

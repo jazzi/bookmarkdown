@@ -232,7 +232,7 @@ def serve(address='127.0.0.1', port=8000):
     server = SocketServer.TCPServer((address, port),
                                     SimpleHTTPServer.SimpleHTTPRequestHandler)
 
-    print "Serving book at http://%s:%d" % (address, port)
+    print "Serving book at http://%s:%d" % (adress, port)
     server.serve_forever()
 
 @baker.command
