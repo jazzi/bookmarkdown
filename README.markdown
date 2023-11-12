@@ -10,10 +10,12 @@ However this software was coded in 2000 and no longer maintained which means it 
 Install
 -------
 
+```text
 /usr/local/bin/python -m pip install baker
 /usr/local/bin/python -m pip install jinja2
 /usr/local/bin/python -m pip install Markdown
 /usr/local/bin/python -m pip install pyquery=1.4.0
+```
 
 Then add the following lines into Markdown and put it after "import sys", or it will encounter "UnicodeDecodeError: 'ascii' codec can't decode byte 0xe6 in position 2: ordinal not in range(128). -- Note: Markdown only accepts unicode input!":
 
@@ -29,6 +31,7 @@ Structure
 
 Your book should have similar structure as below:
 
+```text
 +chapters
 ++++chapter00.md
 ++++chapter01.md
@@ -36,21 +39,26 @@ Your book should have similar structure as below:
 +knowledgement.md
 +config.py
 +build.sh
+```
 
 Config.py
 ---------
 
+```text
 title = 'book title'
 author = 'the author name'
 author_url = 'link'
+```
 
 Build.sh
 --------
 
+```text
 #!/usr/bin/env bash
 
 set -e
 python ../bookmarkdown/bookmarkdown/bookmarkdown build
+```
 
 Usage
 -----
