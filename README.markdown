@@ -36,6 +36,7 @@ Your book should have similar structure as below:
 ++++chapter00.md
 ++++chapter01.md
 +preface.md
++license.md
 +knowledgement.md
 +config.py
 +build.sh
