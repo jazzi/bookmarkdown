@@ -1,246 +1,150 @@
-#!/usr/bin/env python
-
-# {{{
-import os, re, shutil, sys
-import baker
-import markdown
-try:
-    import config
-except ImportError:
-    config = {}
-from pyquery import PyQuery as pq
-from jinja2 import Environment, PackageLoader
+#!/usr/bin/env python3
+
+from __future__ import with_statement
+
+import sys
+import os
+import json
+import codecs
+from subprocess import Popen, PIPE
+from urllib.parse import quote
+from tempfile import NamedTemporaryFile
+
+def main():
+    if len(sys.argv) != 3:
+        print("Usage: bookmarkdown.py <input-directory> <book-title>")
+        sys.exit(1)
+
+    dirname = sys.argv[1]
+    title = sys.argv[2]
+
+    if not os.path.isdir(dirname):
+        print("Not a directory: %s" % dirname)
+        sys.exit(1)
+
+    meta = {
+        'title': title,
+        'chapters': []
+    }
+
+    filenames = [f for f in os.listdir(dirname) if f.endswith('.md')]
+    filenames.sort()
+
+    for filename in filenames:
+        path = os.path.join(dirname, filename)
+        with codecs.open(path, 'r', 'utf-8') as f:
+            content = f.read()
+
+        # Use pandoc to convert the markdown to HTML.
+        p = Popen(['pandoc', '-f', 'markdown', '-t', 'html'], stdin=PIPE, stdout=PIPE)
+        output = p.communicate(input=content.encode('utf-8'))[0]
+        html = output.decode('utf-8')
+
+        # Use pandoc to get the title of the chapter.
+        p = Popen(['pandoc', '-f', 'markdown', '-t', 'json'], stdin=PIPE, stdout=PIPE)
+        output = p.communicate(input=content.encode('utf-8'))[0]
+        doc = json.loads(output.decode('utf-8'))
+        try:
+            # The document is a list of blocks.  Find the first one that's a
+            # Header and pull out the text from it.
+            chapter_title = 'UNKNOWN'
+            for block in doc['blocks']:
+                if block['t'] == 'Header':
+                    # The third element of a Header block is a list of Inline
+                    # objects.  We look for ones that are Str and join them.
+                    strings = []
+                    for item in block['c'][2]:
+                        if item['t'] == 'Str':
+                            strings.append(item['c'])
+                        elif item['t'] == 'Space':
+                            strings.append(' ')
+                    chapter_title = ''.join(strings)
+                    break
+        except (KeyError, ValueError):
+            chapter_title = os.path.splitext(filename)[0].replace('_', ' ')
+
+        meta['chapters'].append({
+            'filename': quote(filename.replace('.md', '.html')),
+            'title': chapter_title,
+            'html': html
+        })
+
+    # Generate the HTML pages.
+    for chapter in meta['chapters']:
+        path = os.path.join(dirname, chapter['filename'])
+        with codecs.open(path, 'w', 'utf-8') as f:
+            # Previous chapter link.
+            if chapter != meta['chapters'][0]:
+                previous = meta['chapters'][meta['chapters'].index(chapter) - 1]
+                prev_link = '<a href="%s" class="previous">&laquo; %s</a>' % (
+                    previous['filename'], previous['title'])
+            else:
+                prev_link = ''
+
+            # Next chapter link.
+            if chapter != meta['chapters'][-1]:
+                next = meta['chapters'][meta['chapters'].index(chapter) + 1]
+                next_link = '<a href="%s" class="next">%s &raquo;</a>' % (
+                    next['filename'], next['title'])
+            else:
+                next_link = ''
+
+            # Write the page.
+            f.write('''<!DOCTYPE html>
+<html>
+<head>
+    <title>%(title)s: %(chapter_title)s</title>
+    <style>
+        body { font-family: serif; line-height: 1.4em; margin: 4em; }
+        .nav { margin: 2em 0; }
+        .previous { float: left; }
+        .next { float: right; }
+    </style>
+</head>
+<body>
+    <h1>%(chapter_title)s</h1>
+    <div class="content">
+        %(html)s
+    </div>
+    <div class="nav">
+        %(prev_link)s
+        %(next_link)s
+    </div>
+</body>
+</html>''' % {
+                'title': meta['title'],
+                'chapter_title': chapter['title'],
+                'html': chapter['html'],
+                'prev_link': prev_link,
+                'next_link': next_link
+            })
+
+    # Generate the PDF via LaTeX.
+    # First build up a giant markdown document with all the chapters.
+    all_markdown = []
+    for chapter in meta['chapters']:
+        all_markdown.append('# %s\n\n' % chapter['title'])
+        path = os.path.join(dirname, chapter['filename'].replace('.html', '.md'))
+        with codecs.open(path, 'r', 'utf-8') as f:
+            all_markdown.append(f.read())
+        all_markdown.append('\n\n\\newpage\n\n')
+
+    # Stuff it all into pandoc to generate a PDF.
+    all_markdown = ''.join(all_markdown)
+    with NamedTemporaryFile(delete=False, suffix='.pdf') as f:
+        pdf_path = os.path.join(dirname, '%s.pdf' % title)
+        p = Popen([
+            'pandoc', '-f', 'markdown', '-t', 'latex',
+            '-o', pdf_path,
+            '--variable', 'papersize:letter',
+            '--variable', 'documentclass:report',
+            '--template', 'default',
+        ], stdin=PIPE)
+        p.communicate(input=all_markdown.encode('utf-8'))
+
+    print("Done!")
+    print("HTML files written to %s" % dirname)
+    print("PDF written to %s" % pdf_path)
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-
-env = Environment(loader=PackageLoader('bookmarkdown', 'templates'))
-join = os.path.join
-
-base_context = {
-    'book_title': getattr(config, 'title', ''),
-    'author': getattr(config, 'author', ''),
-    'author_url': getattr(config, 'author_url', ''),
-    'ga_id': getattr(config, 'ga_id', ''),
-    'gauges_id': getattr(config, 'gauges_id', ''),
-}
-md = markdown.Markdown(extensions=['toc', 'codehilite'], safe_mode=False)
-# }}}
-
-# Utilities -------------------------------------------------------------------
-def mkdirs(path):
-    def _md(acc, next):
-        target = join(acc, next)
-        os.path.exists(target) or os.mkdir(target)
-        return target
-    reduce(_md, path.split(os.path.sep), '')
-
-def render(template, **context):
-    full_context = {}
-    full_context.update(base_context)
-    full_context.update(context)
-
-    return env.get_template('%s.html' % template).render(**full_context)
-
-
-# Guts ------------------------------------------------------------------------
-def _get_next_prev(path, paths):
-    try:
-        i = paths.index(path)
-        next = ('/%s.html' % paths[i + 1]) if i < len(paths) - 1 else None
-        prev = ('/%s.html' % paths[i - 1]) if i > 0 else None
-    except ValueError:
-        next, prev = None, None
-
-    return next, prev
-
-def _build_html_file(path, template, paths=[], context={}):
-    source = '%s.markdown' % path
-
-    if not os.path.exists(source):
-        return
-
-    with open(source, 'r') as f:
-        raw_markdown = f.read()
-
-        if template == 'chapter':
-            raw_markdown = '[TOC]\n\n' + raw_markdown
-
-        content = md.convert(raw_markdown)
-
-    cq = pq(content)
-
-    try:
-        name = cq('h1').text()
-    except ValueError:
-        name = "Untitled Chapter"
-
-    if template != 'splash':
-        title = cq('h1').text()
-    else:
-        title = None
-
-    try:
-        toc = cq('.toc').html()
-        cq('.toc').remove()
-        content = unicode(cq)
-    except ValueError:
-        toc = None
-
-    next, prev = _get_next_prev(path, paths)
-
-    out = render(template, title=title, content=content, name=name, next=next,
-                 prev=prev, toc=toc, **context)
-    target = join('build', 'html', '%s.html' % path)
-
-    with open(target, 'w') as f:
-        f.write(out)
-
-    content = pq(out)
-
-    return {'content': content, 'name': content('.content h1').text(),
-            'filename': path}
-
-def _build_leanpub_file(path):
-    source = '%s.markdown' % path
-
-    if not os.path.exists(source):
-        return
-
-    with open(source, 'r') as f:
-        content = f.read()
-
-    content = re.sub(r'    :::(\w+)',
-                     r'{:lang="\1"}',
-                     content)
-
-    target = join('build', 'leanpub', '%s.markdown' % path.split('/')[-1])
-
-    with open(target, 'w') as f:
-        f.write(content)
-
-def _build_leanpub_book_file(front, chapters):
-    with open(join('build', 'leanpub', 'Book.txt'), 'w') as f:
-        f.write('Front:\n')
-        for path in front:
-            f.write(path + '.markdown\n')
-
-        f.write('Main:\n')
-        for path in chapters:
-            f.write(path.split('/')[-1] + '.markdown\n')
-
-def _build_index_file(chapters):
-    source = 'introduction.markdown'
-
-    if not os.path.exists(source):
-        return
-
-    with open(source, 'r') as f:
-        content = markdown.markdown(f.read())
-
-    out = render('splash', content=content, chapters=chapters)
-    target = join('build', 'html', 'index.html')
-
-    with open(target, 'w') as f:
-        f.write(out)
-
-
-def _chapters():
-    return sorted(os.listdir('chapters'))
-
-
-def _copy_static():
-    import bookmarkdown as ugly_hack
-
-    static_src = join(os.path.dirname(ugly_hack.__file__), 'static')
-    static_dest = join('build', 'html', 'static')
-
-    if os.path.exists(static_dest):
-        shutil.rmtree(static_dest)
-
-    shutil.copytree(static_src, static_dest)
-
-def _build_html():
-    mkdirs(join('build', 'html', 'chapters'))
-
-    _copy_static()
-
-    paths = ['preface', 'acknowledgements']
-    for filename in _chapters():
-        if filename.endswith('.markdown'):
-            name = filename.rsplit('.')[0]
-            paths.append(join('chapters', name))
-
-    _build_html_file('license', 'single', paths)
-    _build_html_file('preface', 'single', paths)
-    _build_html_file('acknowledgements', 'single', paths)
-
-    chapters = []
-    for path in paths[2:]:
-        chapter = _build_html_file(path, 'chapter', paths)
-        chapters.append(chapter)
-
-    _build_index_file(chapters)
-
-def _build_leanpub():
-    mkdirs(join('build', 'leanpub'))
-
-    paths = ['preface', 'acknowledgements']
-    for filename in _chapters():
-        if filename.endswith('.markdown'):
-            name = filename.rsplit('.')[0]
-            paths.append(join('chapters', name))
-
-    for path in paths:
-        _build_leanpub_file(path)
-
-    front = ['preface', 'acknowledgements']
-    if 'chapters/00' in paths:
-        front.append('00')
-    chapters = paths[len(front):]
-
-    _build_leanpub_book_file(front, chapters)
-
-
-# Commands -------------------------------------------------------------------------
-@baker.command
-def leanpub():
-    '''Build the LeanPub-Markdown version of the book.'''
-    _build_leanpub()
-
-@baker.command
-def html():
-    '''Build the HTML version of the book.'''
-    _build_html()
-
-@baker.command
-def build():
-    '''Build all versions of the book.'''
-    _build_html()
-
-@baker.command
-def serve(address='127.0.0.1', port=8000):
-    '''Serve the rendered book with a local webserver.
-
-    :param address: The address to bind the server to (default: 127.0.0.1)
-    :param port: The port to bind the server to (default: 8000)
-
-    '''
-    import SimpleHTTPServer, SocketServer
-
-    os.chdir(join('build', 'html'))
-    server = SocketServer.TCPServer((address, port),
-                                    SimpleHTTPServer.SimpleHTTPRequestHandler)
-
-    print "Serving book at http://%s:%d" % (adress, port)
-    server.serve_forever()
-
-@baker.command
-def watch():
-    '''Watch the source files and rebuild the book when changed.'''
-    pass
-
-
-# Entry ----------------------------------------------------------------------------
 if __name__ == '__main__':
-    baker.run()
+    main()
